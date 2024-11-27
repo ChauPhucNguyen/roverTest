@@ -115,7 +115,8 @@ def pixel_points(y1, y2, line):
     
     return ((x1, int(y1)), (x2, int(y2)))
 
-def calculate_lane_offset(line, image_width, desired_offset_percent=0.25, is_left_lane=True):
+def calculate_lane_offset(line, image_width, desired_offset_percent=0.1, is_left_lane=True):
+    """Calculate lane offset and steering action."""
     if line is None:
         return None, "STOP"
     
@@ -142,6 +143,9 @@ def calculate_lane_offset(line, image_width, desired_offset_percent=0.25, is_lef
         else:
             steering_action = "LEFT"
     
+    # Calculate offset distance from image center
+    offset_distance = abs(line_center_x - (image_width / 2))
+    
     # Calculate new line coordinates to maintain offset
     x_diff = int(target_x - line_center_x)
     new_line = (
@@ -149,7 +153,7 @@ def calculate_lane_offset(line, image_width, desired_offset_percent=0.25, is_lef
         (line[1][0] + x_diff, line[1][1])
     )
     
-    return new_line, steering_action
+    return new_line, steering_action, offset_distance
 
 def lane_lines(image, lines):
     """Create full length lines from pixel points with offset calculation."""
@@ -163,24 +167,48 @@ def lane_lines(image, lines):
     # Process single lane scenarios with offset
     image_width = image.shape[1]
     
+    # New variables to store offset information
+    left_offset_info = None
+    right_offset_info = None
+    
     if left_line is None and right_line is not None:
         # Only right lane detected
-        right_line, steering_action = calculate_lane_offset(right_line, image_width, 0.25, is_left_lane=False)
-        return right_line, None
+        right_line, steering_action, right_offset = calculate_lane_offset(
+            right_line, image_width, 0.25, is_left_lane=False)
+        right_offset_info = (steering_action, right_offset)
+        return right_line, None, right_offset_info, None
     
     elif right_line is None and left_line is not None:
         # Only left lane detected
-        left_line, steering_action = calculate_lane_offset(left_line, image_width, 0.25, is_left_lane=True)
-        return None, left_line
+        left_line, steering_action, left_offset = calculate_lane_offset(
+            left_line, image_width, 0.25, is_left_lane=True)
+        left_offset_info = (steering_action, left_offset)
+        return None, left_line, None, left_offset_info
     
-    return left_line, right_line
+    return left_line, right_line, None, None
 
-def draw_lane_lines(image, lines, color=[0, 0, 255], thickness=15):
-    """Draw lines onto the input image."""
+def draw_lane_lines(image, lines, offset_infos, color=[0, 0, 255], thickness=15):
+    """Draw lines onto the input image with offset information."""
     line_image = np.zeros_like(image)
-    for line in lines:
+    
+    # Draw lane lines
+    for line, offset_info in zip(lines, offset_infos):
         if line is not None:
             cv2.line(line_image, *line, color, thickness)
+            
+            # Add offset information text
+            if offset_info:
+                steering_action, offset = offset_info
+                mid_x = (line[0][0] + line[1][0]) // 2
+                mid_y = (line[0][1] + line[1][1]) // 2
+                
+                # Prepare text
+                offset_text = f"{steering_action}: {offset:.1f}px"
+                cv2.putText(line_image, offset_text, 
+                            (mid_x, mid_y), 
+                            cv2.FONT_HERSHEY_SIMPLEX, 
+                            0.7, (0, 255, 0), 2)
+    
     return cv2.addWeighted(image, 1.0, line_image, 1.0, 0.0)
 
 def frame_processor(image):
@@ -193,21 +221,22 @@ def frame_processor(image):
 
     cv2.imshow('Region of interest with 1st triangle', region)
     hough = hough_transform(region)
-    left_line, right_line = lane_lines(image, hough)
+    left_line, right_line, right_offset_info, left_offset_info = lane_lines(image, hough)
     
     # Determine steering action and send command
     steering_action = "STOP"
     if left_line and right_line:
         steering_action = "FORWARD"
     elif left_line:
-        _, steering_action = calculate_lane_offset(left_line, image.shape[1], 0.25, is_left_lane=True)
+        _, steering_action, _ = calculate_lane_offset(left_line, image.shape[1], 0.25, is_left_lane=True)
     elif right_line:
-        _, steering_action = calculate_lane_offset(right_line, image.shape[1], 0.25, is_left_lane=False)
+        _, steering_action, _ = calculate_lane_offset(right_line, image.shape[1], 0.25, is_left_lane=False)
     
     print(f"Steering Action: {steering_action}")
     
-    # Draw lane lines for visualization
-    result = draw_lane_lines(image, [left_line, right_line])
+    # Draw lane lines with offset information for visualization
+    result = draw_lane_lines(image, [left_line, right_line], 
+                              [left_offset_info, right_offset_info])
     
     return result
 
