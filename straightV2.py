@@ -115,8 +115,44 @@ def pixel_points(y1, y2, line):
     
     return ((x1, int(y1)), (x2, int(y2)))
 
+def calculate_lane_offset(line, image_width, desired_offset_percent=0.25, is_left_lane=True):
+    if line is None:
+        return None, "STOP"
+    
+    # Calculate the x-coordinates of the line
+    line_x1, line_x2 = line[0][0], line[1][0]
+    line_center_x = (line_x1 + line_x2) / 2
+    
+    # Calculate desired offset
+    desired_offset = image_width * desired_offset_percent
+    
+    # Determine steering based on lane side
+    if is_left_lane:
+        # Left lane: offset to the right
+        target_x = line_center_x + desired_offset
+        if target_x > image_width / 2:
+            steering_action = "FORWARD"
+        else:
+            steering_action = "RIGHT"
+    else:
+        # Right lane: offset to the left
+        target_x = line_center_x - desired_offset
+        if target_x < image_width / 2:
+            steering_action = "FORWARD"
+        else:
+            steering_action = "LEFT"
+    
+    # Calculate new line coordinates to maintain offset
+    x_diff = int(target_x - line_center_x)
+    new_line = (
+        (line[0][0] + x_diff, line[0][1]),
+        (line[1][0] + x_diff, line[1][1])
+    )
+    
+    return new_line, steering_action
+
 def lane_lines(image, lines):
-    """Create full length lines from pixel points."""
+    """Create full length lines from pixel points with offset calculation."""
     left_lane, right_lane = average_slope_intercept(lines)
     y1 = image.shape[0]
     y2 = y1 * 0.6
@@ -124,50 +160,20 @@ def lane_lines(image, lines):
     left_line = pixel_points(y1, y2, left_lane)
     right_line = pixel_points(y1, y2, right_lane)
     
-    # single lane handling
+    # Process single lane scenarios with offset
+    image_width = image.shape[1]
+    
     if left_line is None and right_line is not None:
-        # If only right lane is detected, estimate left lane based on road width
-        estimated_lane_width = image.shape[1] * 0.4  # estimated lane width as 40% of image width
-        left_line = (
-            (right_line[0][0] - int(estimated_lane_width), right_line[0][1]),
-            (right_line[1][0] - int(estimated_lane_width), right_line[1][1])
-        )
+        # Only right lane detected
+        right_line, steering_action = calculate_lane_offset(right_line, image_width, 0.25, is_left_lane=False)
+        return right_line, None
     
     elif right_line is None and left_line is not None:
-        # If only left lane is detected, estimate right lane
-        estimated_lane_width = image.shape[1] * 0.4  # estimated lane width as 40% of image width
-        right_line = (
-            (left_line[0][0] + int(estimated_lane_width), left_line[0][1]),
-            (left_line[1][0] + int(estimated_lane_width), left_line[1][1])
-        )
+        # Only left lane detected
+        left_line, steering_action = calculate_lane_offset(left_line, image_width, 0.25, is_left_lane=True)
+        return None, left_line
     
     return left_line, right_line
-
-def determine_steering_action(left_line, right_line, image_width, tolerance=20):
-    """Determine steering action based on lane line positions."""
-    if left_line is None and right_line is None:
-        return "STOP"  # No lanes detected, stop
-    
-    # Calculate lane center
-    if left_line is None and right_line is not None:
-        lane_center = (right_line[0][0] + right_line[1][0]) / 2
-    elif right_line is None and left_line is not None:
-        lane_center = (left_line[0][0] + left_line[1][0]) / 2
-    else:
-        left_x = (left_line[0][0] + left_line[1][0]) / 2
-        right_x = (right_line[0][0] + right_line[1][0]) / 2
-        lane_center = (left_x + right_x) / 2
-    
-    image_center = image_width / 2
-    offset = lane_center - image_center
-    
-    # Determine steering based on offset
-    if abs(offset) <= tolerance:
-        return "FORWARD"  # Go straight
-    elif offset > tolerance:
-        return "RIGHT"  # Turn right
-    else:
-        return "LEFT"  # Turn left
 
 def draw_lane_lines(image, lines, color=[0, 0, 255], thickness=15):
     """Draw lines onto the input image."""
@@ -189,12 +195,16 @@ def frame_processor(image):
     hough = hough_transform(region)
     left_line, right_line = lane_lines(image, hough)
     
-    # Determine steering action
-    steering_action = determine_steering_action(left_line, right_line, image.shape[1])
-    print(f"Steering Action: {steering_action}")
+    # Determine steering action and send command
+    steering_action = "STOP"
+    if left_line and right_line:
+        steering_action = "FORWARD"
+    elif left_line:
+        _, steering_action = calculate_lane_offset(left_line, image.shape[1], 0.25, is_left_lane=True)
+    elif right_line:
+        _, steering_action = calculate_lane_offset(right_line, image.shape[1], 0.25, is_left_lane=False)
     
-    # Send steering command to ESP32 (uncomment and implement your specific sending mechanism)
-    # send_command_to_esp32(steering_action)
+    print(f"Steering Action: {steering_action}")
     
     # Draw lane lines for visualization
     result = draw_lane_lines(image, [left_line, right_line])
@@ -203,7 +213,7 @@ def frame_processor(image):
 
 def webcam_video_processing():
     """Capture video from the webcam and process it for lane detection."""
-    cap = cv2.VideoCapture(1)  # Use 0 for the default webcam
+    cap = cv2.VideoCapture(0)  # Use 0 for the default webcam
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
 
